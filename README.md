@@ -870,6 +870,92 @@ All benchmarks ran on a Dual-Core Intel Xeon Gold 6240 CPU under Tcl 8.6.13 and 
 testing a `Point` class with 5 fields. Memory benchmarks instantiate 100,000 objects;
 time benchmarks use Tcl's `time` command with 1,000 iterations.
 
+### Demos
+
+Two standalone benchmark scripts are provided in the `benchmark/` directory:
+
+#### Timing Benchmarks (`oo_time_benchmark.tcl`)
+
+Measures object creation, field access, and class declaration speed across frameworks.
+
+**Basic usage (all frameworks except C++):**
+
+```sh
+tclsh benchmark/oo_time_benchmark.tcl
+```
+
+Output example:
+```
+Benchmark results (microseconds per iteration)
+iterations: 1000
+
+Category                       |              VOO |            TclOO |             Itcl
+------------------------------+------------------+------------------+------------------
+Object Creation (Explicit)     |            0.647 |            6.871 |           41.815
+Object Creation (Default)      |            0.537 |            6.814 |           52.973
+Setter                         |            0.543 |            0.990 |            2.003
+Getter                         |            0.444 |            1.194 |            2.023
+Class Declaration              |          392.671 |           35.312 |          262.166
+```
+
+**With C++ framework (requires prebuilt library):**
+
+```sh
+tclsh benchmark/oo_time_benchmark.tcl --frameworks "voo cpp" --cpp-lib path/to/library.so
+```
+
+**Custom iterations:**
+
+```sh
+tclsh benchmark/oo_time_benchmark.tcl --frameworks tcloo --iterations 5000
+```
+
+#### Memory Benchmarks (`oo_memory_benchmark.tcl`)
+
+Measures resident memory usage when creating many objects (100,000 by default).
+Each framework runs in a separate process for accurate isolation.
+
+**Basic usage (one framework at a time):**
+
+```sh
+tclsh benchmark/oo_memory_benchmark.tcl --framework voo
+```
+
+Output example:
+```
+framework=voo
+count=100000
+pid=12345
+vmrss_kb=23900
+objects_list_length=100000
+Press Enter to exit (use this pause to inspect with htop)
+```
+
+**Other frameworks:**
+
+```sh
+tclsh benchmark/oo_memory_benchmark.tcl --framework tcloo
+tclsh benchmark/oo_memory_benchmark.tcl --framework itcl
+```
+
+**With C++ framework:**
+
+```sh
+tclsh benchmark/oo_memory_benchmark.tcl --framework cpp --cpp-lib path/to/library.so
+```
+
+**Custom object count:**
+
+```sh
+tclsh benchmark/oo_memory_benchmark.tcl --framework voo --count 500000
+```
+
+**Exit without pause (for scripting):**
+
+```sh
+tclsh benchmark/oo_memory_benchmark.tcl --framework voo --no-hold
+```
+
 ### Object Creation Performance
 
 **Tcl 8.6.13**
