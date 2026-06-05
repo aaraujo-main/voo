@@ -6,8 +6,10 @@
 #   tclsh scripts/install.tcl
 #
 
-set vooVersion "1.0.0"
-set pkgDir "voo${vooVersion}"
+# Get VOO version from voo.tcl
+set scriptDir [file dirname [file normalize [info script]]]
+source [file join $scriptDir .. voo.tcl]
+set pkgDir "voo$voo::version"
 
 # Determine the Tcl library directory
 set libDir [info library]
@@ -43,8 +45,8 @@ foreach {src name} [list $vooSrc voo.tcl $pkgSrc pkgIndex.tcl] {
     }
 }
 
-puts "VOO $vooVersion installed successfully to:"
+puts "VOO $voo::version installed successfully to:"
 puts "  $installDir"
 puts ""
 puts "You can now use it in Tcl with:"
-puts "  package require voo $vooVersion"
+puts "  package require voo $voo::version"
