@@ -16,7 +16,7 @@ namespace eval voo {
     }
 
     ##\brief Declare a new voo class namespace and process its class body
-    # \param[in] args Arguments for class declaration: <className> <body> and optional -extends parent
+    # \param[in] args Arguments for class declaration: <className> <body> and optional -extends parent, -virtual, -overwrite
     # \note Creates the class namespace, imports parent fields/methods when using -extends,
     #       and registers constructors and exports
     proc class {args} {
@@ -32,11 +32,22 @@ namespace eval voo {
                 dict set optDict $arg [lindex $args [incr i]]
             } elseif {$arg eq "-virtual" || $arg eq "-v"} {
                 dict set optDict "-virtual" {}
+            } elseif {$arg eq "-overwrite"} {
+                dict set optDict "-overwrite" {}
             } else {
                 lappend defaultArgs $arg
             }
         }
         lassign $defaultArgs className body
+
+        set classExists [uplevel [list namespace exists $className]]
+        if {$classExists} {
+            if {![dict exists $optDict -overwrite]} {
+                error "Class/Namespace '$className' already exists. Use -overwrite to replace it."
+            }
+            uplevel [list namespace delete $className]
+        }
+
         set vooNs [namespace current]
         # create the namespace for the class
         uplevel [list namespace eval $className [subst -nocommands {
