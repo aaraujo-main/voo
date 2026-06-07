@@ -601,6 +601,50 @@ run_test "override requires parent method" {
     } "Method '*does not override any method*'"
 }
 
+run_test "duplicate voo class can be replaced with -overwrite" {
+    _resetClass ReplaceClass
+
+    voo::class ReplaceClass {
+        public {
+            int_t x 10
+        }
+        method label {} {
+            return old
+        }
+    }
+
+    assert_equal [ReplaceClass::label [ReplaceClass::new 10]] old
+
+    voo::class ReplaceClass -overwrite {
+        public {
+            string_t name fresh
+        }
+        method label {} {
+            return new
+        }
+    }
+
+    set obj [ReplaceClass::new Bob]
+    assert_equal [ReplaceClass::label $obj] new
+    assert_equal [ReplaceClass::get.name $obj] Bob
+    assert_throws {
+        ReplaceClass::get.x $obj
+    } "invalid command name*"
+}
+
+run_test "existing non-voo namespace FAILS to replace without -overwrite" {
+    voo::class LegacyNs {
+        public { int_t x 7 }
+    }
+
+    # Check that it throws an error because it exists and -overwrite is missing
+    assert_throws {
+        voo::class LegacyNs {
+            public { int_t x 7 }
+        }
+    } "Class/Namespace 'LegacyNs' already exists. Use -overwrite to replace it."
+}
+
 puts ""
 puts "Summary: $::TEST_PASS passed, $::TEST_FAIL failed"
 if {$::TEST_FAIL > 0} {

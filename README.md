@@ -171,7 +171,7 @@ Fields and methods in `private { }` blocks receive a `my.` prefix and are not ex
 Declare a new VOO class.
 
 ```tcl
-voo::class ClassName ?-virtual? ?-extends ParentClass? body
+voo::class ClassName ?-virtual? ?-extends ParentClass? ?-overwrite? body
 ```
 
 | Parameter   | Description                                                  |
@@ -179,7 +179,11 @@ voo::class ClassName ?-virtual? ?-extends ParentClass? body
 | `ClassName` | Name of the class (becomes a Tcl namespace)                  |
 | `-virtual`  | Enable virtual polymorphic dispatch for this class           |
 | `-extends`  | Inherit from `ParentClass` (single inheritance only)         |
+| `-overwrite`| Replace existing VOO class namespace before redefinition     |
 | `body`      | Class body containing field declarations, methods, etc.      |
+
+Behavior notes:
+- If `ClassName` already exists as a VOO class or namespace, `voo::class` raises an error unless `-overwrite` is provided.
 
 ```tcl
 # Basic class
