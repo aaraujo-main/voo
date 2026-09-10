@@ -1,7 +1,7 @@
 # Vanilla Tcl Object Orientation (voo) package
 namespace eval voo {
     # package version
-    variable version 1.0.2
+    variable version 1.0.3
     # Jim Tcl lacks namespace exists; detect once during package loading so hot
     # accessor calls never branch on interpreter type.
     variable useQualifiedStaticVars [catch {namespace exists ::voo}]
