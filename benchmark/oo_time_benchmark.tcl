@@ -37,6 +37,20 @@ proc require_package_or_die {name {alt ""}} {
     }
 }
 
+proc shared_library_extension {} {
+    # # sharedlibextension isn't available in Jim Tcl
+    if {![catch {info sharedlibextension} extension]} {
+        return $extension
+    }
+    switch -- $::tcl_platform(platform) {
+        windows { return .dll }
+        default { return .so }
+    }
+}
+
+# Jim lacks info sharedlibextension; detect once so benchmark setup stays portable.
+set is_jimtcl [catch {info sharedlibextension}]
+
 proc define_voo_point_class {} {
     catch {rename ::VooPoint {}}
     catch {namespace delete ::VooPoint}
@@ -206,6 +220,9 @@ proc benchmark_cpp {iterations cpp_lib} {
     if {$cpp_lib eq ""} {
         error "--cpp-lib is required when benchmarking framework 'cpp'"
     }
+    if {$::is_jimtcl} {
+        error "C++ benchmark library must be built against Jim Tcl for framework 'cpp'"
+    }
     if {![file exists $cpp_lib]} {
         error "C++ benchmark library not found: $cpp_lib"
     }
@@ -324,9 +341,19 @@ proc benchmark_itcl {iterations} {
 
 set iterations 1000
 set cpp_lib ""
-set frameworks {voo tcloo itcl}
+# Jim ships neither TclOO nor Itcl; keep its default run focused on VOO.
+if {$is_jimtcl} {
+    set frameworks {voo}
+} else {
+    set frameworks {voo tcloo itcl}
+}
 set voo_package voo
 set itcl_package itcl
+
+set project_root [file join [file dirname [info script]] ..]
+if {[lsearch -exact $auto_path $project_root] < 0} {
+    lappend auto_path $project_root
+}
 
 set i 0
 while {$i < [llength $argv]} {
@@ -363,11 +390,12 @@ while {$i < [llength $argv]} {
     incr i
 }
 
-if {$cpp_lib eq ""} {
+# Probe C++ library paths only when cpp was requested; missing paths break Jim normalize.
+if {$cpp_lib eq "" && [lsearch -exact $frameworks cpp] >= 0} {
     set candidates [list \
-        [file normalize [file join [file dirname [info script]] .. .. build-bench benchmark voopoint_cpp_bench[info sharedlibextension]]] \
-        [file normalize [file join [file dirname [info script]] .. .. build benchmark voopoint_cpp_bench[info sharedlibextension]]] \
-        [file normalize [file join [file dirname [info script]] .. voopoint_cpp_bench[info sharedlibextension]]]]
+        [file join [file dirname [info script]] .. .. build-bench benchmark voopoint_cpp_bench[shared_library_extension]] \
+        [file join [file dirname [info script]] .. .. build benchmark voopoint_cpp_bench[shared_library_extension]] \
+        [file join [file dirname [info script]] .. voopoint_cpp_bench[shared_library_extension]]]
     foreach c $candidates {
         if {[file exists $c]} {
             set cpp_lib $c
@@ -452,7 +480,11 @@ foreach fw $present_frameworks {
 }
 
 puts ""
-puts [format $row_fmt "Category" {*}[lmap fw $present_frameworks {set fw_label($fw)}]]
+set framework_labels {}
+foreach fw $present_frameworks {
+    lappend framework_labels $fw_label($fw)
+}
+puts [format $row_fmt "Category" {*}$framework_labels]
 puts $sep
 
 foreach key {create_explicit create_default setter getter class_declaration} {

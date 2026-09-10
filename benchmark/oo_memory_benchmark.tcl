@@ -25,6 +25,17 @@ proc require_package_or_die {name {alt ""}} {
     }
 }
 
+proc shared_library_extension {} {
+    # sharedlibextension isn't available in Jim Tcl
+    if {![catch {info sharedlibextension} extension]} {
+        return $extension
+    }
+    switch -- $::tcl_platform(platform) {
+        windows { return .dll }
+        default { return .so }
+    }
+}
+
 proc current_rss_kb {} {
     set status_file [format "/proc/%d/status" [pid]]
     if {![file exists $status_file]} {
@@ -119,6 +130,12 @@ set cpp_lib ""
 set voo_package voo
 set itcl_package itcl
 set hold 1
+set is_jimtcl [catch {info sharedlibextension}]
+
+set project_root [file join [file dirname [info script]] ..]
+if {[lsearch -exact $auto_path $project_root] < 0} {
+    lappend auto_path $project_root
+}
 
 set i 0
 while {$i < [llength $argv]} {
@@ -166,11 +183,15 @@ if {$framework eq ""} {
 }
 
 if {$framework eq "cpp"} {
+    if {$is_jimtcl} {
+        error "C++ benchmark library must be built against Jim Tcl for framework cpp"
+    }
     if {$cpp_lib eq ""} {
+        # Jim Tcl lacks info sharedlibextension; avoid normalizing absent paths.
         set candidates [list \
-            [file normalize [file join [file dirname [info script]] .. .. build-bench benchmark voopoint_cpp_bench[info sharedlibextension]]] \
-            [file normalize [file join [file dirname [info script]] .. .. build benchmark voopoint_cpp_bench[info sharedlibextension]]] \
-            [file normalize [file join [file dirname [info script]] .. voopoint_cpp_bench[info sharedlibextension]]]]
+            [file join [file dirname [info script]] .. .. build-bench benchmark voopoint_cpp_bench[shared_library_extension]] \
+            [file join [file dirname [info script]] .. .. build benchmark voopoint_cpp_bench[shared_library_extension]] \
+            [file join [file dirname [info script]] .. voopoint_cpp_bench[shared_library_extension]]]
         foreach c $candidates {
             if {[file exists $c]} {
                 set cpp_lib $c

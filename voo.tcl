@@ -2,17 +2,15 @@
 namespace eval voo {
     # package version
     variable version 1.0.2
+    # Jim Tcl lacks namespace exists; detect once during package loading so hot
+    # accessor calls never branch on interpreter type.
+    variable useQualifiedStaticVars [catch {namespace exists ::voo}]
 
     ##\brief Check if a namespace is a valid voo class
     # \param[in] namespaceName the namespace to check
     # \return 1 if valid voo class, 0 otherwise
     proc isVooClass {namespaceName} {
-        if {![uplevel [list namespace exists $namespaceName]]} {
-            return 0
-        }
-        return [expr {[uplevel [list namespace eval $namespaceName {
-            info exists __defaultObj
-        }]]}]
+        return [uplevel [list info exists ${namespaceName}::__defaultObj]]
     }
 
     ##\brief Declare a new voo class namespace and process its class body
@@ -40,7 +38,7 @@ namespace eval voo {
         }
         lassign $defaultArgs className body
 
-        set classExists [uplevel [list namespace exists $className]]
+        set classExists [uplevel [list info exists ${className}::__defaultObj]]
         if {$classExists} {
             if {![dict exists $optDict -overwrite]} {
                 error "Class/Namespace '$className' already exists. Use -overwrite to replace it."
@@ -51,7 +49,7 @@ namespace eval voo {
         set vooNs [namespace current]
         # create the namespace for the class
         uplevel [list namespace eval $className [subst -nocommands {
-            namespace path [list $vooNs]
+            namespace import ${vooNs}::*
             variable __defaultObj {}
             variable __fields {}
             variable __tmp_isPublicEnabled 1
@@ -85,20 +83,15 @@ namespace eval voo {
             uplevel [list namespace eval $className [list variable __voo_class_namespace $normalizedClassName]]
             # Pre-populate __defaultObj with namespace tag at index 0 BEFORE field declarations
             # so that _getClassCurrNumFields returns 1 for the first field declared
-            uplevel [list namespace eval $className [list set __defaultObj [list $normalizedClassName]]]
+            uplevel [list set ${normalizedClassName}::__defaultObj [list $normalizedClassName]]
         }
 
         # variable __parentClassNamespace {}
         if {[dict exists $optDict -extends]} {
             set parentClassName [dict get $optDict -extends]
 
-            if {![uplevel [list namespace exists $parentClassName]]} {
+            if {![uplevel [list info exists ${parentClassName}::__defaultObj]]} {
                 error "Parent class '$parentClassName' does not exist."
-            }
-
-            # check if parent class exists
-            if {![uplevel [list namespace eval $parentClassName {info exists __defaultObj}]]} {
-                error "Parent class '$parentClassName' is not a valid voo class."
             }
 
             # normalize namespace name of parent class
@@ -112,14 +105,13 @@ namespace eval voo {
 
             # import parent's default object values
             set parentDefaultObj [${parentClassName}::class.defaultObj]
-            uplevel [list namespace eval $className [list set __defaultObj $parentDefaultObj]]
+            set normalizedChildName [uplevel [list namespace eval $className {namespace current}]]
+            uplevel [list set ${normalizedChildName}::__defaultObj $parentDefaultObj]
 
             # if parent is virtual, update namespace tag at index 0 to child's namespace
-            set parentIsVirtual [uplevel [list namespace eval $parentClassName {info exists __voo_is_virtual_class}]]
+            set parentIsVirtual [uplevel [list info exists ${parentClassName}::__voo_is_virtual_class]]
             if {$parentIsVirtual} {
-                set normalizedChildName [uplevel [list namespace eval $className {namespace current}]]
-                uplevel [list namespace eval $className \
-                    [list set __defaultObj [lreplace $parentDefaultObj 0 0 $normalizedChildName]]]
+                uplevel [list set ${normalizedChildName}::__defaultObj [lreplace $parentDefaultObj 0 0 $normalizedChildName]]
                 uplevel [list namespace eval $className [list variable __voo_is_virtual_class 1]]
                 uplevel [list namespace eval $className [list variable __voo_class_namespace $normalizedChildName]]
             }
@@ -127,9 +119,9 @@ namespace eval voo {
             # import parent's field index variables by copying actual index values from parent
             set parentFields [${parentClassName}::class.fields]
             foreach field $parentFields {
-                set fieldIdx [uplevel [list namespace eval $parentClassName [list set $field]]]
+                set fieldIdx [set ${parentClassName}::$field]
                 uplevel [list namespace eval $className [list variable $field $fieldIdx]]
-                uplevel [list namespace eval $className [list lappend __fields $field]]
+                uplevel [list lappend ${className}::__fields $field]
             }
 
             # import parent's acessors in child class with namespace import
@@ -161,7 +153,7 @@ namespace eval voo {
 
         uplevel [list namespace eval $className {
             # clean temporary variable
-            unset __tmp_isPublicEnabled
+            unset [namespace current]::__tmp_isPublicEnabled
         }]
         return
     }
@@ -180,21 +172,21 @@ namespace eval voo {
 
     ##\brief Get the current number of fields declared in the current class
     # \return Number of fields (integer)
-    proc _getClassCurrNumFields {} {
-        return [uplevel 2 {llength $__defaultObj}]
+    proc _getClassCurrNumFields {defaultObj} {
+        return [llength $defaultObj]
     }
 
     ##\brief Check whether public mode is enabled during class body parsing
     # \return 1 if public mode is enabled, 0 otherwise
-    proc _getClassIsPublicEnabled {} {
-        return [uplevel 2 {set __tmp_isPublicEnabled}]
+    proc _getClassIsPublicEnabled {isPublicEnabled} {
+        return $isPublicEnabled
     }
 
     ##\brief Declare getter/setter/updater accessors for a class field
     # \param[in] fieldName name of the field
     # \param[in] isPublic boolean whether accessors are public
     # \param[in] isStatic boolean whether field is static (class-level)
-    proc _declareFieldAcessors {fieldName isPublic isStatic} {
+    proc _declareFieldAcessors {fieldName isPublic isStatic classNs fieldIdx} {
         set prefix {}
 
         if {$isStatic} {
@@ -209,33 +201,57 @@ namespace eval voo {
         set updaterName "${prefix}update.$fieldName"
 
         if {$isStatic} {
-            uplevel 2 [list proc $getterName {} [subst -nocommands {
-                variable $fieldName
-                return $$fieldName
-            }]]
+            variable useQualifiedStaticVars
+            if {$useQualifiedStaticVars} {
+                # Jim Tcl needs qualified namespace-variable access in generated code.
+                proc ${classNs}::$getterName {} [subst -nocommands {
+                    return [set ${classNs}::$fieldName]
+                }]
 
-            uplevel 2 [list proc $setterName {value} [subst -nocommands {
-                variable $fieldName
-                set $fieldName "\$value"
-            }]]
+                proc ${classNs}::$setterName {value} [subst -nocommands {
+                    set ${classNs}::$fieldName "\$value"
+                }]
 
-            uplevel 2 [list proc $updaterName {tempVar body} [subst -nocommands {
-                variable $fieldName
-                upvar "\$tempVar" temp
-                set temp $$fieldName
-                # break link with class variable to avoid copy-on-write
-                set $fieldName {}
-                try {
-                    uplevel \$body
-                } finally {
-                    set $fieldName "\$temp"
-                    set temp {}
-                }
-            }]]
+                proc ${classNs}::$updaterName {tempVar body} [subst -nocommands {
+                    upvar "\$tempVar" temp
+                    set temp [set ${classNs}::$fieldName]
+                    set ${classNs}::$fieldName {}
+                    try {
+                        uplevel \$body
+                    } finally {
+                        set ${classNs}::$fieldName "\$temp"
+                        set temp {}
+                    }
+                }]
+            } else {
+                # Tcl variable links avoid repeated qualified lookups for static fields.
+                proc ${classNs}::$getterName {} [subst -nocommands {
+                    variable $fieldName
+                    return $$fieldName
+                }]
+
+                proc ${classNs}::$setterName {value} [subst -nocommands {
+                    variable $fieldName
+                    set $fieldName "\$value"
+                }]
+
+                proc ${classNs}::$updaterName {tempVar body} [subst -nocommands {
+                    variable $fieldName
+                    upvar "\$tempVar" temp
+                    set temp $$fieldName
+                    set $fieldName {}
+                    try {
+                        uplevel \$body
+                    } finally {
+                        set $fieldName "\$temp"
+                        set temp {}
+                    }
+                }]
+            }
         } else {
-            uplevel 2 [list getter $getterName $fieldName]
-            uplevel 2 [list setter $setterName $fieldName]
-            uplevel 2 [list updater $updaterName $fieldName]
+            getter $getterName $fieldName $classNs $fieldIdx
+            setter $setterName $fieldName $classNs $fieldIdx
+            updater $updaterName $fieldName $classNs $fieldIdx
         }
         return
     }
@@ -251,17 +267,18 @@ namespace eval voo {
 
     ##\brief Ensure a field name does not already exist in the class
     # \param[in] fieldName the field name to check
+    # \param[in] fields the list of instance fields in the class
+    # \param[in] classNs the namespace of the class for static field checks
     # \return Raises an error if the field already exists
     # \note Uses __fields for instance fields and fully-qualified namespace lookup for static
     #       fields to avoid false positives from global variables with the same name
-    proc _validateFieldDoesNotExist {fieldName} {
+    proc _validateFieldDoesNotExist {fieldName fields classNs} {
         # Check instance fields tracked in __fields (class-scoped, no global bleed)
-        if {$fieldName in [uplevel 2 {set __fields}]} {
+        if {$fieldName in $fields} {
             error "Field name '$fieldName' already exists in the class."
         }
         # Check static fields via fully-qualified namespace variable; info exists ::Ns::var
         # only matches that exact namespace variable, never a same-named global
-        set classNs [uplevel 2 {namespace current}]
         if {[info exists ${classNs}::$fieldName]} {
             error "Field name '$fieldName' already exists in the class."
         }
@@ -328,22 +345,29 @@ namespace eval voo {
             set initVal [_getDefaultValueByType $type]
         }
 
+
+        set classNs [uplevel {namespace current}]
+        set fields [uplevel [list set ${classNs}::__fields]]
+        set defaultObj [uplevel [list set ${classNs}::__defaultObj]]
+
         _validateFieldName $name
-        _validateFieldDoesNotExist $name
+        _validateFieldDoesNotExist $name $fields $classNs
         _validateVarValueByType $type $initVal
 
+        set fieldIdx {}
         if {[dict exists $optDict -static]} {
             # static field
             uplevel [list variable $name $initVal]
         } else {
-            set currNumFields [_getClassCurrNumFields]
+            set currNumFields [_getClassCurrNumFields $defaultObj]
+            set fieldIdx $currNumFields
             uplevel [list variable $name $currNumFields]
-            uplevel [list lappend __defaultObj $initVal]
-            uplevel [list lappend __fields $name]
+            uplevel [list lappend ${classNs}::__defaultObj $initVal]
+            uplevel [list lappend ${classNs}::__fields $name]
         }
 
-        set isPublicEnabled [_getClassIsPublicEnabled]
-        _declareFieldAcessors $name $isPublicEnabled [dict exists $optDict -static]
+        set isPublicEnabled [_getClassIsPublicEnabled [uplevel [list set ${classNs}::__tmp_isPublicEnabled]]]
+        _declareFieldAcessors $name $isPublicEnabled [dict exists $optDict -static] $classNs $fieldIdx
         return
     }
 
@@ -454,9 +478,7 @@ namespace eval voo {
     #           return [list ::ClassName $f1 $f2 ...]
     #       This avoids all runtime proc calls (class.defaultObj, set.*) and variable lookups,
     #       making virtual object creation as cheap as non-virtual.
-    proc _buildConstructorParams {} {
-        set argList [uplevel 2 {set __fields}]
-        set isVirtual [uplevel 2 {info exists __voo_is_virtual_class}]
+    proc _buildConstructorParams {argList isVirtual classNs} {
         set spacedArgVarListStr {}
         foreach arg $argList {
             append spacedArgVarListStr "\$$arg "
@@ -464,7 +486,6 @@ namespace eval voo {
         if {$isVirtual} {
             # Read the normalized class namespace at definition time so subst embeds it
             # as a literal in the generated body - no runtime variable lookup required.
-            set classNs [uplevel 2 {set __voo_class_namespace}]
             set spacedArgVarListStr "{$classNs} $spacedArgVarListStr"
             set body [subst -nocommands {
                 return [list $spacedArgVarListStr]
@@ -524,7 +545,15 @@ namespace eval voo {
             set body [dict get $optDict -noargs]
         } else {
             if {[llength $defaultArgs] == 0} {
-                lassign [_buildConstructorParams] argList body
+                set classNamespace [uplevel {namespace current}]
+                set classFields [uplevel [list set ${classNamespace}::__fields]]
+                set classIsVirtual [uplevel [list info exists ${classNamespace}::__voo_is_virtual_class]]
+                if {$classIsVirtual} {
+                    set classNamespace [uplevel [list set ${classNamespace}::__voo_class_namespace]]
+                } else {
+                    set classNamespace {}
+                }
+                lassign [_buildConstructorParams $classFields $classIsVirtual $classNamespace] argList body
             } else {
                 if {[llength $defaultArgs] != 2} {
                     error "Invalid constructor definition, expected '?...? ?<argList> <body>?'"
@@ -540,16 +569,17 @@ namespace eval voo {
     ##\brief Generate a getter procedure for a field
     # \param[in] methodName name of the generated getter (may include namespace prefix)
     # \param[in] fieldName name of the field to read
-    proc getter {methodName fieldName} {
+    proc getter {methodName fieldName {classNs {}} {fieldIdx {}}} {
         # implementation of getter definition
-        set fieldIdx [uplevel [list set $fieldName]]
-        uplevel [subst -nocommands {
+        if {$classNs eq {}} {
+            set fieldIdx [uplevel [list set $fieldName]]
+            set classNs [uplevel {namespace current}]
+        }
+        proc ${classNs}::$methodName {this} [subst -nocommands {
             ##\\brief Getter for $fieldName
             # \\param\[in\] this class instance
             # \\return $fieldName value
-            proc $methodName {this} {
-                return [lindex \$this $fieldIdx]
-            }
+            return [lindex \$this $fieldIdx]
         }]
         return
     }
@@ -557,17 +587,18 @@ namespace eval voo {
     ##\brief Generate a setter procedure for a field
     # \param[in] methodName name of the generated setter (may include namespace prefix)
     # \param[in] fieldName name of the field to write
-    proc setter {methodName fieldName} {
+    proc setter {methodName fieldName {classNs {}} {fieldIdx {}}} {
         # implementation of setter definition
-        set fieldIdx [uplevel [list set $fieldName]]
-        uplevel [subst -nocommands {
+        if {$classNs eq {}} {
+            set fieldIdx [uplevel [list set $fieldName]]
+            set classNs [uplevel {namespace current}]
+        }
+        proc ${classNs}::$methodName {thisVar value} [subst -nocommands {
             ##\\brief Setter for $fieldName
             # \\param\[in\] thisVar name of variable containing class instance
             # \\param\[in\] value new value for $fieldName
-            proc $methodName {thisVar value} {
-                upvar \$thisVar this
-                lset this $fieldIdx \$value
-            }
+            upvar \$thisVar this
+            lset this $fieldIdx \$value
         }]
         return
     }
@@ -576,28 +607,29 @@ namespace eval voo {
     # \param[in] methodName name of the generated updater (may include namespace prefix)
     # \param[in] fieldName name of the field to update by reference
     # \note The updater detaches the field to avoid unnecessary copying during updates
-    proc updater {methodName fieldName} {
+    proc updater {methodName fieldName {classNs {}} {fieldIdx {}}} {
         # implementation of updater definition
-        set fieldIdx [uplevel [list set $fieldName]]
-        uplevel [subst -nocommands {
+        if {$classNs eq {}} {
+            set fieldIdx [uplevel [list set $fieldName]]
+            set classNs [uplevel {namespace current}]
+        }
+        proc ${classNs}::$methodName {thisVar tempVar body} [subst -nocommands {
             ##\\brief Update $fieldName by reference
             # \\param\[in\] thisVar name of variable containing class instance
             # \\param\[out\] tempVar name of variable to hold $fieldName during update
             # \\param\[in\] body script to execute with $fieldName in tempVar
             # \\note Avoids copy-on-write by detaching field during update
-            proc $methodName {thisVar tempVar body} {
-                upvar \$thisVar this
-                upvar \$tempVar temp
+            upvar \$thisVar this
+            upvar \$tempVar temp
 
-                set temp [lindex \$this $fieldIdx]
-                # break link with object to avoid copy-on-write
-                lset this $fieldIdx {}
-                try {
-                    uplevel \$body
-                } finally {
-                    lset this $fieldIdx \$temp
-                    set temp {}
-                }
+            set temp [lindex \$this $fieldIdx]
+            # break link with object to avoid copy-on-write
+            lset this $fieldIdx {}
+            try {
+                uplevel \$body
+            } finally {
+                lset this $fieldIdx \$temp
+                set temp {}
             }
         }]
     }
@@ -605,7 +637,8 @@ namespace eval voo {
     ##\brief Declare a method in the current class namespace
     # \param[in] args Method declaration arguments: name, argList, body and options (-static, -upvar, -update, -override)
     proc method {args} {
-        set isPublicEnabled [_getClassIsPublicEnabled]
+        set className [uplevel {namespace current}]
+        set isPublicEnabled [_getClassIsPublicEnabled [uplevel [list set ${className}::__tmp_isPublicEnabled]]]
         set defaultArgs {}
         set optDict {}
         set numArgs [llength $args]
@@ -655,17 +688,13 @@ namespace eval voo {
 
         lappend finalArgList {*}$argList
 
-        set className [uplevel {namespace current}]
-        
         if {[dict exists $optDict -update]} {
             set updateFields [dict get $optDict -update]
             if {[llength $updateFields] == 0} {
                 error "-update option requires at least one field name"
             }
             foreach field $updateFields {
-                try {
-                  set fieldIdx [uplevel [list set $field]]
-                } trap {} {} {
+                if {[catch {set fieldIdx [set ${className}::$field]}]} {
                     error "Field '$field' specified in -update option does not exist in class '$className'"
                 }
                 append finalBody [subst -nocommands {
@@ -683,7 +712,7 @@ namespace eval voo {
         if {[dict exists $optDict -update]} {
             append finalBody "\} finally \{"
             foreach field $updateFields {
-                set fieldIdx [uplevel [list set $field]]
+                set fieldIdx [set ${className}::$field]
                 append finalBody [subst -nocommands {
                     lset this $fieldIdx \$$field
                 }]
@@ -699,20 +728,20 @@ namespace eval voo {
         }
 
         if {[dict exists $optDict -override]} {
-            set parentNs [uplevel {set __parentClassNamespace}]
+            set parentNs [set ${className}::__parentClassNamespace]
             if {[info commands "${parentNs}::$name"] eq ""} {
                 error "Method '$name' does not override any method in parent class '$parentNs'"
             }
             # If parent's method is virtual (has base.<name>), auto-promote this override
             # to a dispatcher so that deep inheritance dispatch works correctly
-            if {[uplevel {info exists __voo_is_virtual_class}] && \
+            if {[info exists ${className}::__voo_is_virtual_class] && \
                     [info commands "${parentNs}::base.$name"] ne ""} {
                 dict set optDict -virtual {}
             }
         }
 
         if {[dict exists $optDict -virtual]} {
-            if {![uplevel {info exists __voo_is_virtual_class}]} {
+            if {![info exists ${className}::__voo_is_virtual_class]} {
                 error "Method '$name' is declared -virtual but '[uplevel {namespace current}]' is not a virtual class"
             }
             if {[dict exists $optDict -static]} {
@@ -729,10 +758,10 @@ namespace eval voo {
                 }
                 set updateFieldNum 0
                 foreach field $updateFields {
-                    set fieldIdx [uplevel [list set $field]]
+                    set fieldIdx [set ${className}::$field]
                     append baseBody [subst -nocommands {
                         set __voo_borrow__$updateFieldNum 0
-                        if {[uplevel 1 {info exists __voo_update_active__internal}] && [uplevel 1 [list info exists $field]]} {
+                        if {[uplevel {info exists __voo_update_active__internal}] && [uplevel [list info exists $field]]} {
                             set __voo_borrow__$updateFieldNum 1
                             upvar 1 $field $field
                         } else {
@@ -750,7 +779,7 @@ namespace eval voo {
                 append baseBody "\} finally \{"
                 set updateFieldNum 0
                 foreach field $updateFields {
-                    set fieldIdx [uplevel [list set $field]]
+                    set fieldIdx [set ${className}::$field]
                     append baseBody [subst -nocommands {
                         if {![set __voo_borrow__$updateFieldNum]} {
                             lset this $fieldIdx \$$field
@@ -795,7 +824,8 @@ namespace eval voo {
     # \param[in] methods List of method names (or a single method name) to import from parent.
     # \note Must be called inside a class declared with -extends. Methods are copied at class-definition time.
     proc importMethods {methods} {
-        set parentNs [uplevel {set __parentClassNamespace}]
+        set classNs [uplevel {namespace current}]
+        set parentNs [set ${classNs}::__parentClassNamespace]
 
         # Validate caller context and get parent namespace stored by -extends handling
         if {$parentNs eq ""} {
