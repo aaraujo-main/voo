@@ -852,18 +852,18 @@ tclsh scripts/install.tcl
 
 1. Locate your Tcl installation's `lib/` directory (e.g. `/usr/lib/tcl8.6/..` or the
    parent of `[info library]`).
-2. Create a `voo1.0.0` folder inside that `lib/` directory.
+2. Create a `voo1.0.2` folder inside that `lib/` directory.
 3. Copy `voo.tcl` and `pkgIndex.tcl` into the new folder:
 
 ```sh
-mkdir -p /usr/lib/tcl8.6/../voo1.0.0
-cp voo.tcl pkgIndex.tcl /usr/lib/tcl8.6/../voo1.0.0/
+mkdir -p /usr/lib/tcl8.6/../voo1.0.2
+cp voo.tcl pkgIndex.tcl /usr/lib/tcl8.6/../voo1.0.2/
 ```
 
 ### Usage After Installation
 
 ```tcl
-package require voo 1.0.0
+package require voo 1.0.2
 ```
 
 ---
