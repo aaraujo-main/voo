@@ -18,6 +18,7 @@ call-site API.
 - [Quickstart](#quickstart)
 - [Quick Reference](#quick-reference)
 - [Install](#install)
+- [Interpreter Compatibility](#interpreter-compatibility)
 - [API](#api)
   - [voo::class](#vooclass)
   - [Field Types](#field-types)
@@ -867,6 +868,18 @@ package require voo 1.0.0
 
 ---
 
+## Interpreter Compatibility
+
+VOO supports standard **Tcl** and **Jim Tcl**. The pure-Tcl implementation and VOO test suite
+run on both interpreters.
+
+The C++ benchmark module currently links against the standard Tcl C API and therefore
+runs only with standard Tcl. It must not be loaded into Jim Tcl. A Jim-compatible C++
+benchmark should be possible by rebuilding the module against the Jim Tcl C API and exporting
+the initializer expected by Jim Tcl.
+
+---
+
 ## Benchmarks
 
 VOO achieves significant performance and memory advantages compared to TclOO and Itcl.
@@ -903,6 +916,9 @@ Class Declaration              |          392.671 |           35.312 |          
 ```
 
 **With C++ framework (requires prebuilt library):**
+
+The supplied C++ module is standard-Tcl-only. Jim Tcl runs can use VOO benchmarks, but would
+require a separate C++ module built against the Jim Tcl C API for C++ measurements.
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release

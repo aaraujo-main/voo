@@ -8,7 +8,7 @@ set ::TEST_PASS 0
 set ::TEST_FAIL 0
 
 proc _resetClass {name} {
-    if {[namespace exists ::$name]} {
+    if {[info exists ::${name}::__defaultObj]} {
         namespace delete ::$name
     }
 }
@@ -50,9 +50,15 @@ proc assert_throws {script {pattern *}} {
 proc run_test {name body} {
     puts -nonewline "- $name ... "
     if {[catch {uplevel 1 $body} err opts]} {
+        if {[info exists ::errorInfo]} {
+            set errorStack $::errorInfo
+        } else {
+            set errorStack [info stacktrace]
+        }
         incr ::TEST_FAIL
         puts "FAIL"
         puts "  $err"
+        puts "   $errorStack"
     } else {
         incr ::TEST_PASS
         puts "PASS"
@@ -407,9 +413,9 @@ run_test "field names are namespace variables holding field indexes" {
         }
     }
 
-    assert_equal [namespace eval ::FieldIndexDemo {set first}] 0
-    assert_equal [namespace eval ::FieldIndexDemo {set hidden}] 1
-    assert_equal [namespace eval ::FieldIndexDemo {set myField}] 2
+    assert_equal [set ::FieldIndexDemo::first] 0
+    assert_equal [set ::FieldIndexDemo::hidden] 1
+    assert_equal [set ::FieldIndexDemo::myField] 2
     assert_equal [FieldIndexDemo::class.fields] [list first hidden myField]
 }
 
@@ -459,7 +465,7 @@ run_test "argument name collision with field index variable raises error" {
     set obj [NameCollision::new 1]
     assert_throws {
         NameCollision::bad obj 9
-    } {*variable "myField" already exists*}
+    } {*myField*}
 }
 
 # ----------------------------------------------------------------------------
