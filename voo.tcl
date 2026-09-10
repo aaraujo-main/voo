@@ -1,7 +1,7 @@
 # Vanilla Tcl Object Orientation (voo) package
 namespace eval voo {
     # package version
-    variable version 1.0.1
+    variable version 1.0.2
 
     ##\brief Check if a namespace is a valid voo class
     # \param[in] namespaceName the namespace to check
