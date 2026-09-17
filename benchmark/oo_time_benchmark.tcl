@@ -7,6 +7,8 @@ proc usage {} {
     puts "  --iterations N        Number of timed iterations per benchmark (default: 1000)"
     puts "  --cpp-lib PATH        Path to VOO C++ shared library (Point_Init provider)"
     puts "  --frameworks LIST     Space-separated frameworks among: cpp voo tcloo itcl"
+    puts "  --voo-layouts LIST    VOO layouts to benchmark: list fieldpack (default: list)"
+    puts "  --voo-layout NAME     Alias for --voo-layouts with one layout"
     puts "  --voo-package NAME    VOO package name for package require (default: voo)"
     puts "  --itcl-package NAME   Itcl package name for package require (default: itcl)"
     puts "  --help                Show this help"
@@ -51,11 +53,23 @@ proc shared_library_extension {} {
 # Jim lacks info sharedlibextension; detect once so benchmark setup stays portable.
 set is_jimtcl [catch {info sharedlibextension}]
 
-proc define_voo_point_class {} {
+proc validate_voo_layouts {layouts} {
+    if {[llength $layouts] == 0} {
+        error "--voo-layouts requires at least one layout: list or fieldpack"
+    }
+    foreach layout $layouts {
+        if {$layout ni {list fieldpack}} {
+            error "Unsupported VOO layout '$layout'; expected list or fieldpack"
+        }
+    }
+    return $layouts
+}
+
+proc define_voo_point_class {layout} {
     catch {rename ::VooPoint {}}
     catch {namespace delete ::VooPoint}
 
-    voo::class ::VooPoint {
+    voo::class ::VooPoint -layout $layout {
         public {
             double_t x 0.0
             double_t y 0.0
@@ -255,8 +269,8 @@ proc benchmark_cpp {iterations cpp_lib} {
     return [array get result]
 }
 
-proc benchmark_voo {iterations} {
-    define_voo_point_class
+proc benchmark_voo {iterations layout} {
+    define_voo_point_class $layout
 
     set result(create_explicit) [avg_us [profile {
         set __obj [::VooPoint::new 1.0 2.0 "bench" 1 1]
@@ -348,6 +362,7 @@ if {$is_jimtcl} {
     set frameworks {voo tcloo itcl}
 }
 set voo_package voo
+set voo_layouts {list}
 set itcl_package itcl
 
 set project_root [file join [file dirname [info script]] ..]
@@ -375,6 +390,14 @@ while {$i < [llength $argv]} {
             incr i
             set frameworks [lindex $argv $i]
         }
+        --voo-layouts {
+            incr i
+            set voo_layouts [lindex $argv $i]
+        }
+        --voo-layout {
+            incr i
+            set voo_layouts [list [lindex $argv $i]]
+        }
         --voo-package {
             incr i
             set voo_package [lindex $argv $i]
@@ -389,6 +412,8 @@ while {$i < [llength $argv]} {
     }
     incr i
 }
+
+validate_voo_layouts $voo_layouts
 
 # Probe C++ library paths only when cpp was requested; missing paths break Jim normalize.
 if {$cpp_lib eq "" && [lsearch -exact $frameworks cpp] >= 0} {
@@ -415,35 +440,40 @@ if {[lsearch -exact $frameworks itcl] >= 0} {
 }
 
 array set results {}
+set benchmark_ids {}
 
 foreach fw $frameworks {
-    switch -- $fw {
-        cpp {
-            array set r [benchmark_cpp $iterations $cpp_lib]
-        }
-        voo {
-            array set r [benchmark_voo $iterations]
-        }
-        tcloo {
-            array set r [benchmark_tcloo $iterations]
-        }
-        itcl {
-            array set r [benchmark_itcl $iterations]
-        }
-        default {
-            error "Unsupported framework '$fw'"
+    set run_ids [list $fw]
+    if {$fw eq "voo"} {
+        set run_ids {}
+        foreach layout $voo_layouts {
+            lappend run_ids "voo-$layout"
         }
     }
 
-    foreach k {create_explicit create_default setter getter class_declaration} {
-        set results($k,$fw) $r($k)
+    foreach run_id $run_ids {
+        switch -- $fw {
+            cpp { array set r [benchmark_cpp $iterations $cpp_lib] }
+            voo {
+                set layout [string range $run_id 4 end]
+                array set r [benchmark_voo $iterations $layout]
+            }
+            tcloo { array set r [benchmark_tcloo $iterations] }
+            itcl { array set r [benchmark_itcl $iterations] }
+            default { error "Unsupported framework '$fw'" }
+        }
+
+        lappend benchmark_ids $run_id
+        foreach k {create_explicit create_default setter getter class_declaration} {
+            set results($k,$run_id) $r($k)
+        }
     }
 }
 
-set ordered_frameworks {cpp voo tcloo itcl}
+set ordered_frameworks {cpp voo-list voo-fieldpack tcloo itcl}
 set present_frameworks {}
 foreach fw $ordered_frameworks {
-    if {[lsearch -exact $frameworks $fw] >= 0} {
+    if {[lsearch -exact $benchmark_ids $fw] >= 0} {
         lappend present_frameworks $fw
     }
 }
@@ -458,7 +488,8 @@ array set labels {
 
 array set fw_label {
     cpp "VOO C++"
-    voo "VOO"
+    voo-list "VOO (list)"
+    voo-fieldpack "VOO (fieldpack)"
     tcloo "TclOO"
     itcl "Itcl"
 }

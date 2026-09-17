@@ -9,7 +9,11 @@ proc usage {} {
     puts "Options:"
     puts "  --count N             Number of objects to create (default: 100000)"
     puts "  --cpp-lib PATH        Path to VOO C++ shared library (required for cpp)"
+    puts "  --class-schema NAME   VOO class fixture: point, scalar10, scalar20, or nested (default: point)"
+    puts "  --voo-layout NAME     VOO layout: list or fieldpack (default: list)"
     puts "  --voo-package NAME    VOO package name for package require (default: voo)"
+    puts "  --fieldpack-package NAME"
+    puts "                        FieldPack package name for fieldpack layout (default: fieldpack)"
     puts "  --itcl-package NAME   Itcl package name for package require (default: itcl)"
     puts "  --hold                Wait for Enter before exit (default: on)"
     puts "  --no-hold             Exit immediately after printing stats"
@@ -53,11 +57,24 @@ proc current_rss_kb {} {
     return "unknown"
 }
 
-proc define_voo_point_class {} {
-    catch {rename ::VooPoint {}}
+proc validate_voo_layout {layout} {
+    if {$layout ni {list fieldpack}} {
+        error "Unsupported VOO layout '$layout'; expected list or fieldpack"
+    }
+    return $layout
+}
+
+proc validate_class_schema {class_kind} {
+    if {$class_kind ni {point scalar10 scalar20 nested}} {
+        error "Unsupported VOO class '$class_kind'; expected point, scalar10, scalar20, or nested"
+    }
+    return $class_kind
+}
+
+proc define_voo_point_class {layout} {
     catch {namespace delete ::VooPoint}
 
-    voo::class ::VooPoint {
+    voo::class ::VooPoint -layout $layout {
         public {
             double_t x 0.0
             double_t y 0.0
@@ -70,6 +87,103 @@ proc define_voo_point_class {} {
             set dx [get.x $this]
             set dy [get.y $this]
             return [expr {sqrt($dx * $dx + $dy * $dy)}]
+        }
+    }
+}
+
+proc define_voo_scalar10_class {layout} {
+    catch {namespace delete ::VooScalar}
+
+    voo::class ::VooScalar -layout $layout {
+        public {
+            int_t int0 0
+            double_t double0 0.0
+            bool_t bool0 0
+            int_t int1 1
+            double_t double1 1.0
+            bool_t bool1 1
+            int_t int2 2
+            double_t double2 2.0
+            bool_t bool2 0
+            int_t int3 3
+        }
+    }
+}
+
+proc define_voo_scalar_class {layout} {
+    catch {namespace delete ::VooScalar}
+
+    voo::class ::VooScalar -layout $layout {
+        public {
+            int_t int0 0
+            double_t double0 0.0
+            bool_t bool0 0
+            int_t int1 1
+            double_t double1 1.0
+            bool_t bool1 1
+            int_t int2 2
+            double_t double2 2.0
+            bool_t bool2 0
+            int_t int3 3
+            double_t double3 3.0
+            bool_t bool3 1
+            int_t int4 4
+            double_t double4 4.0
+            bool_t bool4 0
+            int_t int5 5
+            double_t double5 5.0
+            bool_t bool5 1
+            int_t int6 6
+            double_t double6 6.0
+            bool_t bool6 0
+            int_t int7 7
+            double_t double7 7.0
+            bool_t bool7 1
+        }
+    }
+}
+
+proc define_voo_nested_classes {layout} {
+    foreach class_name {VooNestedChild VooNested} {
+        catch {namespace delete ::$class_name}
+    }
+
+    voo::class ::VooNestedChild -layout $layout {
+        public {
+            int_t value 0
+            double_t weight 0.0
+            string_t label child
+        }
+    }
+
+    voo::class ::VooNested -layout $layout {
+        public {
+            class_t -slice ::VooNestedChild child0 [::VooNestedChild::new()]
+            class_t -slice ::VooNestedChild child1 [::VooNestedChild::new()]
+            class_t -slice ::VooNestedChild child2 [::VooNestedChild::new()]
+        }
+    }
+}
+
+proc define_voo_class {layout class_kind} {
+    switch -- $class_kind {
+        point { define_voo_point_class $layout }
+        scalar10 { define_voo_scalar10_class $layout }
+        scalar20 { define_voo_scalar_class $layout }
+        nested { define_voo_nested_classes $layout }
+    }
+}
+
+proc new_voo_object {class_kind} {
+    switch -- $class_kind {
+        point { return [::VooPoint::new 1.0 2.0 "bench" 1 1] }
+        scalar10 { return [::VooScalar::new 0 0.0 0 1 1.0 1 2 2.0 0 3] }
+        scalar20 { return [::VooScalar::new 0 0.0 0 1 1.0 1 2 2.0 0 3 3.0 1 4 4.0 0 5 5.0 1 6 6.0 0 7 7.0 1] }
+        nested {
+            set child0 [::VooNestedChild::new 0 0.0 "child0"]
+            set child1 [::VooNestedChild::new 1 1.0 "child1"]
+            set child2 [::VooNestedChild::new 2 2.0 "child2"]
+            return [::VooNested::new $child0 $child1 $child2]
         }
     }
 }
@@ -127,7 +241,10 @@ proc define_itcl_point_class {} {
 set framework ""
 set count 100000
 set cpp_lib ""
+set class_schema point
+set voo_layout list
 set voo_package voo
+set fieldpack_package fieldpack
 set itcl_package itcl
 set hold 1
 set is_jimtcl [catch {info sharedlibextension}]
@@ -157,9 +274,21 @@ while {$i < [llength $argv]} {
             incr i
             set cpp_lib [lindex $argv $i]
         }
+        --class-schema {
+            incr i
+            set class_schema [lindex $argv $i]
+        }
+        --voo-layout {
+            incr i
+            set voo_layout [lindex $argv $i]
+        }
         --voo-package {
             incr i
             set voo_package [lindex $argv $i]
+        }
+        --fieldpack-package {
+            incr i
+            set fieldpack_package [lindex $argv $i]
         }
         --itcl-package {
             incr i
@@ -180,6 +309,13 @@ while {$i < [llength $argv]} {
 
 if {$framework eq ""} {
     error "--framework is required"
+}
+
+validate_voo_layout $voo_layout
+validate_class_schema $class_schema
+
+if {$framework in {tcloo itcl} && $class_schema ne "point"} {
+    error "--class-schema is only supported with framework voo"
 }
 
 if {$framework eq "cpp"} {
@@ -207,11 +343,14 @@ if {$framework eq "cpp"} {
 
 switch -- $framework {
     voo {
+        if {$voo_layout eq "fieldpack"} {
+            require_package_or_die $fieldpack_package
+        }
         require_package_or_die $voo_package
-        define_voo_point_class
+        define_voo_class $voo_layout $class_schema
         set objects {}
         for {set n 0} {$n < $count} {incr n} {
-            lappend objects [::VooPoint::new 1.0 2.0 "bench" 1 1]
+            lappend objects [new_voo_object $class_schema]
         }
     }
     tcloo {
@@ -243,6 +382,10 @@ switch -- $framework {
 
 puts "framework=$framework"
 puts "count=$count"
+if {$framework eq "voo"} {
+    puts "class_schema=$class_schema"
+    puts "voo_layout=$voo_layout"
+}
 puts "pid=[pid]"
 puts "vmrss_kb=[current_rss_kb]"
 puts "objects_list_length=[llength $objects]"

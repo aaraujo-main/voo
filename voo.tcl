@@ -1,7 +1,7 @@
 # Vanilla Tcl Object Orientation (voo) package
 namespace eval voo {
     # package version
-    variable version 1.0.3
+    variable version 1.1.0
     # Jim Tcl lacks namespace exists; detect once during package loading so hot
     # accessor calls never branch on interpreter type.
     variable useQualifiedStaticVars [catch {namespace exists ::voo}]
@@ -20,6 +20,7 @@ namespace eval voo {
     proc class {args} {
         set optDict {}
         set defaultArgs {}
+        set layout list
         set numArgs [llength $args]
         for {set i 0} {$i < $numArgs} {incr i} {
             set arg [lindex $args $i]
@@ -28,6 +29,18 @@ namespace eval voo {
                     error "Constructor option '$arg' requires an argument"
                 }
                 dict set optDict $arg [lindex $args [incr i]]
+            } elseif {$arg eq "-layout"} {
+                if {[dict exists $optDict $arg]} {
+                    error "Class option '$arg' may not be specified more than once"
+                }
+                if {$i + 1 >= $numArgs} {
+                    error "Class option '$arg' requires an argument"
+                }
+                set layout [lindex $args [incr i]]
+                if {$layout ne "list" && $layout ne "fieldpack"} {
+                    error "Class option '$arg' expected list or fieldpack, got '$layout'"
+                }
+                dict set optDict $arg $layout
             } elseif {$arg eq "-virtual" || $arg eq "-v"} {
                 dict set optDict "-virtual" {}
             } elseif {$arg eq "-overwrite"} {
@@ -37,6 +50,22 @@ namespace eval voo {
             }
         }
         lassign $defaultArgs className body
+
+        if {$layout eq "fieldpack"} {
+            if {[catch {package require fieldpack 1.0} error]} {
+                error "voo::class: -layout fieldpack requires FieldPack 1.0: $error"
+            }
+        }
+
+        if {[dict exists $optDict -extends]} {
+            set parentClassName [dict get $optDict -extends]
+            if {![uplevel [list info exists ${parentClassName}::__defaultObj]]} {
+                error "Parent class '$parentClassName' does not exist."
+            }
+            if {[${parentClassName}::class.layout] ne $layout} {
+                error "voo::class: parent uses layout [${parentClassName}::class.layout], child uses layout $layout"
+            }
+        }
 
         set classExists [uplevel [list info exists ${className}::__defaultObj]]
         if {$classExists} {
@@ -52,7 +81,13 @@ namespace eval voo {
             namespace import ${vooNs}::*
             variable __defaultObj {}
             variable __fields {}
-            variable __tmp_isPublicEnabled 1
+            variable __voo_field_types {}
+            variable __voo_field_defaults {}
+            variable __voo_own_field_types {}
+            variable __voo_own_field_defaults {}
+            variable __voo_fieldTypeMap {}
+            variable __voo_layout $layout
+            variable __voo_isPublicEnabled 1
         }]]
 
         uplevel [list namespace eval $className {
@@ -71,19 +106,56 @@ namespace eval voo {
                 variable __fields
                 return $__fields
             }
+
+            ##\brief Get storage layout for this class
+            # \return list or fieldpack
+            proc class.layout {} {
+                variable __voo_layout
+                return $__voo_layout
+            }
+
+            proc class.my.ownFieldTypes {} {
+                variable __voo_own_field_types
+                return $__voo_own_field_types
+            }
+
+            proc class.my.ownFieldDefaults {} {
+                variable __voo_own_field_defaults
+                return $__voo_own_field_defaults
+            }
+
+            proc class.my.fieldTypeMap {} {
+                variable __voo_fieldTypeMap
+                return $__voo_fieldTypeMap
+            }
+
+            proc class.fieldType {fieldName} {
+                variable __voo_fieldTypeMap
+                if {![dict exists $__voo_fieldTypeMap $fieldName]} {
+                    error "Unknown field '$fieldName'"
+                }
+                return [dict get $__voo_fieldTypeMap $fieldName]
+            }
+
+            proc class.my.schemaId {} {
+                variable __voo_schema_id
+                return $__voo_schema_id
+            }
         }]
 
         if {[dict exists $optDict -virtual] && [dict exists $optDict -extends]} {
             error "voo::class: cannot use -virtual with -extends; child classes inherit virtual automatically from a -virtual parent"
         }
 
-        if {[dict exists $optDict -virtual]} {
+        if {[dict exists $optDict -virtual] || $layout eq "fieldpack"} {
             set normalizedClassName [uplevel [list namespace eval $className {namespace current}]]
             uplevel [list namespace eval $className [list variable __voo_is_virtual_class 1]]
             uplevel [list namespace eval $className [list variable __voo_class_namespace $normalizedClassName]]
-            # Pre-populate __defaultObj with namespace tag at index 0 BEFORE field declarations
-            # so that _getClassCurrNumFields returns 1 for the first field declared
-            uplevel [list set ${normalizedClassName}::__defaultObj [list $normalizedClassName]]
+            if {$layout eq "list"} {
+                # Pre-populate __defaultObj with namespace tag at index 0 BEFORE field declarations
+                # so that _getClassCurrNumFields returns 1 for the first field declared
+                uplevel [list set ${normalizedClassName}::__defaultObj [list $normalizedClassName]]
+            }
         }
 
         # variable __parentClassNamespace {}
@@ -106,12 +178,24 @@ namespace eval voo {
             # import parent's default object values
             set parentDefaultObj [${parentClassName}::class.defaultObj]
             set normalizedChildName [uplevel [list namespace eval $className {namespace current}]]
-            uplevel [list set ${normalizedChildName}::__defaultObj $parentDefaultObj]
+            if {$layout eq "list"} {
+                uplevel [list set ${normalizedChildName}::__defaultObj $parentDefaultObj]
+            }
+
+            if {$layout eq "fieldpack"} {
+                uplevel [list set ${normalizedChildName}::__voo_field_types [set ${parentClassName}::__voo_field_types]]
+                uplevel [list set ${normalizedChildName}::__voo_field_defaults [set ${parentClassName}::__voo_field_defaults]]
+            }
+
+            uplevel [list set ${normalizedChildName}::__voo_fieldTypeMap [${parentClassName}::class.my.fieldTypeMap]]
 
             # if parent is virtual, update namespace tag at index 0 to child's namespace
             set parentIsVirtual [uplevel [list info exists ${parentClassName}::__voo_is_virtual_class]]
-            if {$parentIsVirtual} {
+            if {$parentIsVirtual && $layout eq "list"} {
                 uplevel [list set ${normalizedChildName}::__defaultObj [lreplace $parentDefaultObj 0 0 $normalizedChildName]]
+                uplevel [list namespace eval $className [list variable __voo_is_virtual_class 1]]
+                uplevel [list namespace eval $className [list variable __voo_class_namespace $normalizedChildName]]
+            } elseif {$parentIsVirtual} {
                 uplevel [list namespace eval $className [list variable __voo_is_virtual_class 1]]
                 uplevel [list namespace eval $className [list variable __voo_class_namespace $normalizedChildName]]
             }
@@ -134,6 +218,28 @@ namespace eval voo {
 
         uplevel [list namespace eval $className $body]
 
+        if {$layout eq "fieldpack"} {
+            set normalizedClassName [uplevel [list namespace eval $className {namespace current}]]
+            set fieldpackTypes [uplevel [list set ${normalizedClassName}::__voo_field_types]]
+            if {[dict exists $optDict -extends]} {
+                set parentSchemaId [${parentClassName}::class.my.schemaId]
+                set ownTypes [uplevel [list set ${normalizedClassName}::__voo_own_field_types]]
+                set schemaId [fieldpack::schema::derive \
+                    $normalizedClassName $parentSchemaId $ownTypes 1 reuse-equivalent]
+            } else {
+                set schemaId [fieldpack::schema::register \
+                    $normalizedClassName $fieldpackTypes 1 reuse-equivalent]
+            }
+            set object [fieldpack::new $schemaId]
+            set fieldDefaults [uplevel [list set ${normalizedClassName}::__voo_field_defaults]]
+            for {set fieldIdx 0} {$fieldIdx < [llength $fieldDefaults]} {incr fieldIdx} {
+                set fieldDefault [lindex $fieldDefaults $fieldIdx]
+                fieldpack::set object $fieldIdx $fieldDefault
+            }
+            uplevel [list set ${normalizedClassName}::__defaultObj $object]
+            uplevel [list variable ${normalizedClassName}::__voo_schema_id $schemaId]
+        }
+
         uplevel [list namespace eval $className {
             if {[info commands new] eq ""} {
                 constructor
@@ -153,7 +259,7 @@ namespace eval voo {
 
         uplevel [list namespace eval $className {
             # clean temporary variable
-            unset [namespace current]::__tmp_isPublicEnabled
+            unset [namespace current]::__voo_isPublicEnabled
         }]
         return
     }
@@ -338,11 +444,45 @@ namespace eval voo {
             error "Variable definition requires: ?<option>? <name> ?<initialValue>?"
         }
 
-        if {[llength $defaultArgs] == 2} {
+        if {$type eq "class"} {
+            set nestedKind slice
+            if {[lindex $defaultArgs 0] eq "-slice" || [lindex $defaultArgs 0] eq "-pack"} {
+                set nestedKind [string range [lindex $defaultArgs 0] 1 end]
+                set defaultArgs [lrange $defaultArgs 1 end]
+            }
+            if {[llength $defaultArgs] < 2 || [llength $defaultArgs] > 3} {
+                error "class_t requires: ?-slice|-pack? <class> <name> ?<initialValue>?"
+            }
+            set nestedClass [lindex $defaultArgs 0]
+            set name [lindex $defaultArgs 1]
+            if {![string match ::* $nestedClass]} {
+                error "class_t requires global class name starting with ::, got '$nestedClass'"
+            }
+            if {![uplevel [list info exists ${nestedClass}::__defaultObj]]} {
+                error "Nested class '$nestedClass' does not exist"
+            }
+            if {[llength $defaultArgs] == 3} {
+                set initVal [lindex $defaultArgs 2]
+            } else {
+                set initVal [${nestedClass}::new()]
+            }
+        } elseif {[llength $defaultArgs] == 2} {
             lassign $defaultArgs name initVal
         } else {
             lassign $defaultArgs name
             set initVal [_getDefaultValueByType $type]
+        }
+
+        if {$type eq "slice" || $type eq "pack"} {
+            if {[llength $defaultArgs] < 2 || [llength $defaultArgs] > 3} {
+                error "Nested FieldPack variable definition requires: <name> <schema> ?<initialValue>?"
+            }
+            lassign $defaultArgs name nestedSchema
+            if {[llength $defaultArgs] == 3} {
+                set initVal [lindex $defaultArgs 2]
+            } else {
+                set initVal {}
+            }
         }
 
 
@@ -352,21 +492,53 @@ namespace eval voo {
 
         _validateFieldName $name
         _validateFieldDoesNotExist $name $fields $classNs
-        _validateVarValueByType $type $initVal
+        if {$type ne "slice" && $type ne "pack" && $type ne "class"} {
+            _validateVarValueByType $type $initVal
+        }
 
+        set layout [uplevel [list set ${classNs}::__voo_layout]]
         set fieldIdx {}
         if {[dict exists $optDict -static]} {
             # static field
             uplevel [list variable $name $initVal]
         } else {
-            set currNumFields [_getClassCurrNumFields $defaultObj]
+            if {$layout eq "fieldpack"} {
+                set currNumFields [llength $fields]
+            } else {
+                set currNumFields [_getClassCurrNumFields $defaultObj]
+            }
             set fieldIdx $currNumFields
             uplevel [list variable $name $currNumFields]
-            uplevel [list lappend ${classNs}::__defaultObj $initVal]
+            if {$layout ne "fieldpack"} {
+                uplevel [list lappend ${classNs}::__defaultObj $initVal]
+            }
             uplevel [list lappend ${classNs}::__fields $name]
+            set fieldTypeMapValue $type
+            if {$layout eq "fieldpack"} {
+                switch -- $type {
+                    int - double - bool - string { set fieldpackType $type }
+                    list - dict - object { set fieldpackType obj }
+                    class {
+                        if {[${nestedClass}::class.layout] ne "fieldpack"} {
+                            error "FieldPack class_t requires nested class '$nestedClass' to use fieldpack layout"
+                        }
+                        set fieldpackType [list $nestedKind $nestedClass]
+                        set fieldTypeMapValue [list class $nestedClass]
+                    }
+                    default { error "Unsupported FieldPack field type '$type'" }
+                }
+                uplevel [list lappend ${classNs}::__voo_field_types $fieldpackType]
+                uplevel [list lappend ${classNs}::__voo_field_defaults $initVal]
+                uplevel [list lappend ${classNs}::__voo_own_field_types $fieldpackType]
+                uplevel [list lappend ${classNs}::__voo_own_field_defaults $initVal]
+            }
+            if {$type eq "class"} {
+                set fieldTypeMapValue [list class $nestedClass]
+            }
+            uplevel [list dict set ${classNs}::__voo_fieldTypeMap $name $fieldTypeMapValue]
         }
 
-        set isPublicEnabled [_getClassIsPublicEnabled [uplevel [list set ${classNs}::__tmp_isPublicEnabled]]]
+        set isPublicEnabled [_getClassIsPublicEnabled [uplevel [list set ${classNs}::__voo_isPublicEnabled]]]
         _declareFieldAcessors $name $isPublicEnabled [dict exists $optDict -static] $classNs $fieldIdx
         return
     }
@@ -413,6 +585,11 @@ namespace eval voo {
         uplevel [list _var "object" $args]
     }
 
+    ##\brief Declare a nested VOO class field
+    proc class_t {args} {
+        uplevel [list _var "class" $args]
+    }
+
     ##\brief Enable public mode for declarations inside the provided body
     # \param[in] body script to execute with public accessors enabled
     # \return Result of executing body
@@ -424,11 +601,11 @@ namespace eval voo {
     # \param[in] body script to execute with private accessors
     # \return Result of executing body
     proc private {body} {
-        uplevel {variable __tmp_isPublicEnabled 0}
+        uplevel {variable __voo_isPublicEnabled 0}
         try {
             uplevel $body
         } finally {
-            uplevel {variable __tmp_isPublicEnabled 1}
+            uplevel {variable __voo_isPublicEnabled 1}
         }
     }
 
@@ -479,6 +656,19 @@ namespace eval voo {
     #       This avoids all runtime proc calls (class.defaultObj, set.*) and variable lookups,
     #       making virtual object creation as cheap as non-virtual.
     proc _buildConstructorParams {argList isVirtual classNs} {
+        if {$classNs ne {} && [set ${classNs}::__voo_layout] eq "fieldpack"} {
+            set body {
+                variable __defaultObj
+                set object $__defaultObj
+            }
+            set fieldIdx 0
+            foreach arg $argList {
+                append body "\nfieldpack::set object $fieldIdx \$$arg"
+                incr fieldIdx
+            }
+            append body "\nreturn \$object"
+            return [list $argList $body]
+        }
         set spacedArgVarListStr {}
         foreach arg $argList {
             append spacedArgVarListStr "\$$arg "
@@ -550,7 +740,7 @@ namespace eval voo {
                 set classIsVirtual [uplevel [list info exists ${classNamespace}::__voo_is_virtual_class]]
                 if {$classIsVirtual} {
                     set classNamespace [uplevel [list set ${classNamespace}::__voo_class_namespace]]
-                } else {
+                } elseif {[set ${classNamespace}::__voo_layout] eq "list"} {
                     set classNamespace {}
                 }
                 lassign [_buildConstructorParams $classFields $classIsVirtual $classNamespace] argList body
@@ -575,11 +765,21 @@ namespace eval voo {
             set fieldIdx [uplevel [list set $fieldName]]
             set classNs [uplevel {namespace current}]
         }
+        set isFieldpack [expr {[set ${classNs}::__voo_layout] eq "fieldpack"}]
+        if {$isFieldpack} {
+            set getterBody [subst -nocommands {
+                return [fieldpack::get \$this $fieldIdx]
+            }]
+        } else {
+            set getterBody [subst -nocommands {
+                return [lindex \$this $fieldIdx]
+            }]
+        }
         proc ${classNs}::$methodName {this} [subst -nocommands {
             ##\\brief Getter for $fieldName
             # \\param\[in\] this class instance
             # \\return $fieldName value
-            return [lindex \$this $fieldIdx]
+            $getterBody
         }]
         return
     }
@@ -593,12 +793,22 @@ namespace eval voo {
             set fieldIdx [uplevel [list set $fieldName]]
             set classNs [uplevel {namespace current}]
         }
+        set isFieldpack [expr {[set ${classNs}::__voo_layout] eq "fieldpack"}]
+        if {$isFieldpack} {
+            set setterBody [subst -nocommands {
+                fieldpack::set this $fieldIdx \$value
+            }]
+        } else {
+            set setterBody [subst -nocommands {
+                lset this $fieldIdx \$value
+            }]
+        }
         proc ${classNs}::$methodName {thisVar value} [subst -nocommands {
             ##\\brief Setter for $fieldName
             # \\param\[in\] thisVar name of variable containing class instance
             # \\param\[in\] value new value for $fieldName
             upvar \$thisVar this
-            lset this $fieldIdx \$value
+            $setterBody
         }]
         return
     }
@@ -612,6 +822,14 @@ namespace eval voo {
         if {$classNs eq {}} {
             set fieldIdx [uplevel [list set $fieldName]]
             set classNs [uplevel {namespace current}]
+        }
+        if {[set ${classNs}::__voo_layout] eq "fieldpack"} {
+            proc ${classNs}::$methodName {thisVar tempVar body} [subst -nocommands {
+                upvar \$thisVar this
+                upvar \$tempVar temp
+                fieldpack::update this $fieldIdx temp \$body
+            }]
+            return
         }
         proc ${classNs}::$methodName {thisVar tempVar body} [subst -nocommands {
             ##\\brief Update $fieldName by reference
@@ -638,7 +856,7 @@ namespace eval voo {
     # \param[in] args Method declaration arguments: name, argList, body and options (-static, -upvar, -update, -override)
     proc method {args} {
         set className [uplevel {namespace current}]
-        set isPublicEnabled [_getClassIsPublicEnabled [uplevel [list set ${className}::__tmp_isPublicEnabled]]]
+        set isPublicEnabled [_getClassIsPublicEnabled [uplevel [list set ${className}::__voo_isPublicEnabled]]]
         set defaultArgs {}
         set optDict {}
         set numArgs [llength $args]
@@ -697,6 +915,19 @@ namespace eval voo {
                 if {[catch {set fieldIdx [set ${className}::$field]}]} {
                     error "Field '$field' specified in -update option does not exist in class '$className'"
                 }
+            }
+        }
+
+        if {[dict exists $optDict -update] && [set ${className}::__voo_layout] eq "fieldpack"} {
+            set updateBody $body
+            foreach field [lreverse $updateFields] {
+                set fieldIdx [set ${className}::$field]
+                set updateBody [list fieldpack::update this $fieldIdx $field $updateBody]
+            }
+            append finalBody $updateBody
+        } elseif {[dict exists $optDict -update]} {
+            foreach field $updateFields {
+                set fieldIdx [set ${className}::$field]
                 append finalBody [subst -nocommands {
                     set $field [lindex \$this $fieldIdx]
                     lset this $fieldIdx {}
@@ -706,10 +937,12 @@ namespace eval voo {
                 set __voo_update_active__internal 1
             }
             append finalBody "try \{"
+            append finalBody $body
+        } else {
+            append finalBody $body
         }
-        append finalBody $body
 
-        if {[dict exists $optDict -update]} {
+        if {[dict exists $optDict -update] && [set ${className}::__voo_layout] ne "fieldpack"} {
             append finalBody "\} finally \{"
             foreach field $updateFields {
                 set fieldIdx [set ${className}::$field]
@@ -750,8 +983,22 @@ namespace eval voo {
             # Register base.<name> with the original body for direct parent calls from subclasses.
             # For -update methods, make base.<name> borrow parent detached field locals when called
             # from inside another -update frame (e.g., Child::method -> Parent::base.method).
+            set implementationBody $finalBody
             set baseBody $finalBody
-            if {[dict exists $optDict -update]} {
+            if {[dict exists $optDict -override] && [set ${className}::__voo_layout] eq "fieldpack"} {
+                if {[dict exists $optDict -upvar]} {
+                    set baseBody [format {tailcall %s::base.%s $thisVar} $parentNs $name]
+                    foreach arg $argList {
+                        append baseBody [format { $%s} $arg]
+                    }
+                } else {
+                    set baseBody [format {tailcall %s::base.%s $this} $parentNs $name]
+                    foreach arg $argList {
+                        append baseBody [format { $%s} $arg]
+                    }
+                }
+            }
+            if {[dict exists $optDict -update] && [set ${className}::__voo_layout] ne "fieldpack"} {
                 set baseBody {}
                 append baseBody {
                     upvar $thisVar this
@@ -793,6 +1040,9 @@ namespace eval voo {
                 append baseBody "\}"
             }
             uplevel [list proc "base.$name" $finalArgList $baseBody]
+            if {[dict exists $optDict -override] && [set ${className}::__voo_layout] eq "fieldpack"} {
+                uplevel [list proc "__voo_impl.$name" $finalArgList $implementationBody]
+            }
             # Build dispatch body: route to concrete class implementation at runtime.
             # Use tailcall so -upvar methods bind to the caller frame (not this dispatcher frame).
             if {[dict exists $optDict -upvar]} {
@@ -802,14 +1052,22 @@ namespace eval voo {
                 set dispatchBody {}
                 set thisDispatchArg "\$this"
             }
-            append dispatchBody "set __voo_cls \[lindex \$this 0\]\n"
+            if {[set ${className}::__voo_layout] eq "fieldpack"} {
+                append dispatchBody "set __voo_cls \[fieldpack::get_schema_name \$this\]\n"
+            } else {
+                append dispatchBody "set __voo_cls \[lindex \$this 0\]\n"
+            }
             append dispatchBody "if \{\$__voo_cls ne \[namespace current\] && \[info commands \${__voo_cls}::$name\] ne {}\} \{\n"
             append dispatchBody "    tailcall \${__voo_cls}::$name $thisDispatchArg"
             foreach arg $argList {
                 append dispatchBody " \$$arg"
             }
             append dispatchBody "\n\}\n"
-            append dispatchBody "tailcall base.$name $thisDispatchArg"
+            if {[dict exists $optDict -override] && [set ${className}::__voo_layout] eq "fieldpack"} {
+                append dispatchBody "tailcall __voo_impl.$name $thisDispatchArg"
+            } else {
+                append dispatchBody "tailcall base.$name $thisDispatchArg"
+            }
             foreach arg $argList {
                 append dispatchBody " \$$arg"
             }
