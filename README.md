@@ -172,13 +172,14 @@ Fields and methods in `private { }` blocks receive a `my.` prefix and are not ex
 Declare a new VOO class.
 
 ```tcl
-voo::class ClassName ?-virtual? ?-extends ParentClass? ?-overwrite? body
+voo::class ClassName ?-layout list|fieldpack? ?-virtual? ?-extends ParentClass? ?-overwrite? body
 ```
 
 | Parameter   | Description                                                  |
 |-------------|--------------------------------------------------------------|
 | `ClassName` | Name of the class (becomes a Tcl namespace)                  |
-| `-virtual`  | Enable virtual polymorphic dispatch for this class           |
+| `-layout`   | Use Tcl-list storage (default) or FieldPack storage           |
+| `-virtual`  | Enable virtual polymorphc dispatch for this class           |
 | `-extends`  | Inherit from `ParentClass` (single inheritance only)         |
 | `-overwrite`| Replace existing VOO class namespace before redefinition     |
 | `body`      | Class body containing field declarations, methods, etc.      |
@@ -220,39 +221,56 @@ Declare typed fields inside a class body. Each creates a field with a default va
 auto-generates accessors.
 
 ```tcl
-double_t  ?-static? name ?initialValue?
-int_t     ?-static? name ?initialValue?
-string_t  ?-static? name ?initialValue?
-bool_t    ?-static? name ?initialValue?
-list_t    ?-static? name ?initialValue?
-dict_t    ?-static? name ?initialValue?
-obj_t     ?-static? name ?initialValue?
+double_t ?-static? name ?initialValue?
+int_t    ?-static? name ?initialValue?
+string_t ?-static? name ?initialValue?
+bool_t   ?-static? name ?initialValue?
+list_t   ?-static? name ?initialValue?
+dict_t   ?-static? name ?initialValue?
+obj_t    ?-static? name ?initialValue?
+class_t  ?-slice|-pack? globalClassName name ?initialValue?
 ```
 
-| Parameter      | Description                                           |
-|----------------|-------------------------------------------------------|
-| `-static`      | Store as class-level variable instead of instance field|
-| `name`         | Field name                                            |
-| `initialValue` | Optional initial value (type default if omitted)      |
+| Parameter         | Description                                             |
+|-------------------|---------------------------------------------------------|
+| `-static`         | Store as class-level variable instead of instance field |
+| `-slice`          | Store nested FieldPack fields inline (default)          |
+| `-pack`           | Store nested FieldPack fields in owned child storage    |
+| `globalClassName` | Referenced VOO class name                               |
+| `name`            | Field name                                              |
+| `initialValue`    | Optional initial value (type default if omitted)        |
+
+Simple list-layout example:
 
 ```tcl
 voo::class Config {
     public {
-        # Non-static fields
-        string_t  host "localhost"
-        int_t     port 8080
-        bool_t    verbose 0
-        list_t    tags [list]
-        dict_t    metadata [dict create]
-        obj_t     nested {}
-
-        # Static field
-        int_t     -static instanceCount 0
+        string_t host "localhost"
+        int_t port 8080
+        bool_t verbose 0
+        list_t tags [list]
+        dict_t metadata [dict create]
+        obj_t nested {}
     }
+}
+```
 
-    private {
-        # Private field => my.get.secret, my.set.secret, my.update.secret
-        string_t secret "token"
+`class_t` references another global VOO class. Under list layout, both options behave
+as `obj_t` and retain nested VOO objects as Tcl values. Under FieldPack layout,
+`-slice` maps to `{slice schemaId}` and `-pack` maps to `{pack schemaId}`. FieldPack
+layout requires FieldPack 1.0.
+
+FieldPack-layout example:
+
+```tcl
+voo::class ConfigChild -layout fieldpack {
+    public { string_t value "" }
+}
+
+voo::class FieldPackConfig -layout fieldpack {
+    public {
+        class_t ::ConfigChild inlineChild
+        class_t -pack ::ConfigChild ownedChild
     }
 }
 ```
@@ -756,7 +774,7 @@ set p4 [Person::new.args -name "Carol"]
 
 ---
 
-### `class.defaultObj` / `class.fields`
+### Class introspection
 
 Introspection procedures auto-generated for every class.
 
@@ -764,6 +782,12 @@ Introspection procedures auto-generated for every class.
 |----------------------|---------------------------------------------------|
 | `Class::class.defaultObj` | The default object (list of default values)  |
 | `Class::class.fields`    | List of field names in declaration order      |
+| `Class::class.layout`     | `list` or `fieldpack` storage layout          |
+| `Class::class.fieldType fieldName` | Public field type metadata             |
+
+Framework-internal metadata uses `class.my.*` naming and is not part of the official public
+VOO API. This includes `class.my.schemaId`, `class.my.fieldTypeMap`,
+`class.my.ownFieldTypes`, and `class.my.ownFieldDefaults`.
 
 ```tcl
 voo::class Point {
@@ -852,18 +876,18 @@ tclsh scripts/install.tcl
 
 1. Locate your Tcl installation's `lib/` directory (e.g. `/usr/lib/tcl8.6/..` or the
    parent of `[info library]`).
-2. Create a `voo1.0.3` folder inside that `lib/` directory.
+2. Create a `voo1.1.0` folder inside that `lib/` directory.
 3. Copy `voo.tcl` and `pkgIndex.tcl` into the new folder:
 
 ```sh
-mkdir -p /usr/lib/tcl8.6/../voo1.0.3
-cp voo.tcl pkgIndex.tcl /usr/lib/tcl8.6/../voo1.0.3/
+mkdir -p /usr/lib/tcl8.6/../voo1.1.0
+cp voo.tcl pkgIndex.tcl /usr/lib/tcl8.6/../voo1.1.0/
 ```
 
 ### Usage After Installation
 
 ```tcl
-package require voo 1.0.3
+package require voo 1.1.0
 ```
 
 ---
@@ -883,9 +907,7 @@ the initializer expected by Jim Tcl.
 ## Benchmarks
 
 VOO achieves significant performance and memory advantages compared to TclOO and Itcl.
-All benchmarks ran on a Dual-Core Intel Xeon Gold 6240 CPU under Tcl 8.6.13 and Tcl 9.0,
-testing a `Point` class with 5 fields. Memory benchmarks instantiate 100,000 objects;
-time benchmarks use Tcl's `time` command with 1,000 iterations.
+Benchmarks for comparing VOO (C++), VOO, TclOO and Itcl ran under Tcl 8.6.13 and Tcl 9.0, testing a `Point` class with 5 fields. In turn, benchrmarks comparing the list (default) and fieldpack layouts supported in VOO ran under Tcl 8.6.13, testing `Point` class in time experiments, and a set of different class schema in memory experiments. Memory benchmarks instantiate 100,000 objects; time benchmarks use Tcl's `time` command with 1,000 iterations.
 
 ### Demos
 
@@ -937,10 +959,38 @@ tclsh benchmark/oo_time_benchmark.tcl --frameworks "voo tcloo itcl cpp" --cpp-li
 tclsh benchmark/oo_time_benchmark.tcl --frameworks tcloo --iterations 5000
 ```
 
+**VOO storage layouts:**
+
+`--voo-layouts` accepts a space-separated list containing `list` and `fieldpack`.
+`--voo-layout` is an alias for selecting one layout. The default is `list`.
+
+```sh
+ tclsh benchmark/oo_time_benchmark.tcl \
+    --frameworks "voo tcloo itcl cpp" \
+    --cpp-lib ./build/benchmark/voopoint_pkg.so \
+    --voo-layouts "list fieldpack"
+```
+
+Example timing run from this checkout:
+
+```
+Category                       |          VOO C++ |       VOO (list) |  VOO (fieldpack) |            TclOO |             Itcl
+------------------------------+------------------+------------------+------------------+------------------+------------------
+Object Creation (Explicit)     |            0.413 |            0.630 |            2.097 |            7.606 |           40.927
+Object Creation (Default)      |            0.346 |            0.539 |            0.633 |            8.117 |           39.035
+Setter                         |            0.184 |            0.708 |            0.956 |            1.260 |            1.014
+Getter                         |            0.319 |            0.471 |            0.569 |            1.234 |            1.287
+Class Declaration              |              N/A |          385.931 |          411.366 |           38.435 |          172.544
+```
+
 #### Memory Benchmarks (`oo_memory_benchmark.tcl`)
 
 Measures resident memory usage when creating many objects (100,000 by default).
 Each framework runs in a separate process for accurate isolation.
+
+For VOO Tcl class declaration, different class layouts and schemas are avaiable. The  `--voo-layout` selects `list` or `fieldpack` storage. In turn, `--class-schema` selects the VOO fixture: `point` (5 fields), `scalar10` (10 fields), `scalar20` (20 fields), or
+`nested` (three nested child objects). The default schema is `point`; these options do
+not apply to TclOO, Itcl, or C++ runs.
 
 **Basic usage (one framework at a time):**
 
@@ -984,6 +1034,39 @@ tclsh benchmark/oo_memory_benchmark.tcl --framework voo --count 500000
 ```sh
 tclsh benchmark/oo_memory_benchmark.tcl --framework voo --no-hold
 ```
+
+**list vs fieldpack layouts**
+
+```sh
+tclsh benchmark/oo_memory_benchmark.tcl --framework voo --voo-layout list --class-schema point
+tclsh benchmark/oo_memory_benchmark.tcl --framework voo --voo-layout list --class-schema scalar10
+tclsh benchmark/oo_memory_benchmark.tcl --framework voo --voo-layout list --class-schema scalar20
+tclsh benchmark/oo_memory_benchmark.tcl --framework voo --voo-layout list --class-schema nested
+tclsh benchmark/oo_memory_benchmark.tcl --framework voo --voo-layout fieldpack --class-schema point
+tclsh benchmark/oo_memory_benchmark.tcl --framework voo --voo-layout fieldpack --class-schema scalar10
+tclsh benchmark/oo_memory_benchmark.tcl --framework voo --voo-layout fieldpack --class-schema scalar20
+tclsh benchmark/oo_memory_benchmark.tcl --framework voo --voo-layout fieldpack --class-schema nested
+```
+
+
+Example memory comparison from this checkout (`count=100000`, values in KiB):
+
+| Schema | VOO (list) | VOO (fieldpack) |
+|--------|-----------:|----------------:|
+| `point` | 24,160 | 23,984 |
+| `scalar10` | 24,120 | 22,356 |
+| `scalar` | 36,668 | 28,664 |
+| `nested` | 50,684 | 36,424 |
+
+Point-object alternatives from the same run:
+
+| Framework | VmRSS (KiB) |
+|-----------|-------------:|
+| VOO C++ | 18,304 |
+| VOO (list) | 24,160 |
+| VOO (fieldpack) | 23,984 |
+| TclOO | 253,892 |
+| Itcl | 894,424 |
 
 ### Object Creation Performance
 
@@ -1081,13 +1164,19 @@ in Tcl 9.0 are the largest among all frameworks.
 
 Automated API behavior tests are available in the `test/` folder.
 
-To run the full test suite:
+To run the standard test suite:
 
 ```sh
 tclsh test/test.tcl
 ```
 
-The script validates expected behavior for constructors, methods, inheritance,
+There are also the test suite for the `fieldpack` layout:
+
+```sh
+tclsh test/fieldpack_layout.tcl
+```
+
+The scripts validates expected behavior for constructors, methods, inheritance,
 virtual dispatch, accessors, and error scenarios documented in this README.
 
 ---

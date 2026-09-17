@@ -1,3 +1,6 @@
 [submodule "tclxx"]
 	path = tclxx
 	url = git@github.com:aaraujo-main/tclxx.git
+[submodule "fieldpack"]
+	path = fieldpack
+	url = git@github.com:aaraujo-main/fieldpack.git
